@@ -31,7 +31,7 @@ export default function AdminDashboard() {
     const [newUser, setNewUser] = useState({ name: '', email: '', role: 'doctor', specialization: '' });
     const [searchQuery, setSearchQuery] = useState('');
     const [addingUser, setAddingUser] = useState(false);
-    const { appointments, therapies, prescriptions, users, DOCTORS, THERAPISTS, PATIENTS, addUser } = useDataStore();
+    const { appointments, therapies, prescriptions, users, DOCTORS, THERAPISTS, PATIENTS, addUser, reload } = useDataStore();
 
     const stats = [
         { label: 'Total Users', value: users.length, icon: Users, change: '+12%', up: true, color: 'blue' },
@@ -65,7 +65,7 @@ export default function AdminDashboard() {
     );
 
     return (
-        <DashboardLayout activeTab={activeTab} onTabChange={setActiveTab}>
+        <DashboardLayout activeTab={activeTab} onTabChange={setActiveTab} onRefresh={reload}>
 
             {/* ── OVERVIEW ── */}
             {activeTab === 'overview' && (

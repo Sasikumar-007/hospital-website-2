@@ -193,7 +193,7 @@ DIET: ${rx.diet}
     };
 
     return (
-        <DashboardLayout activeTab={activeTab} onTabChange={setActiveTab}>
+        <DashboardLayout activeTab={activeTab} onTabChange={setActiveTab} onRefresh={reload}>
 
             {/* ── OVERVIEW ── */}
             {activeTab === 'overview' && (
