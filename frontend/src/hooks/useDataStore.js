@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../lib/supabase.js';
 import {
     profilesService,
     appointmentsService,
@@ -56,23 +57,146 @@ export function useDataStore() {
         }
     }, []);
 
+    // ── Initial load ──────────────────────────────────────────────────────────
     useEffect(() => { loadAll(); }, [loadAll]);
+
+    // ── Real-time subscriptions (instant updates across all users) ────────────
+    useEffect(() => {
+        // Subscribe to appointments table changes
+        const aptChannel = supabase
+            .channel('appointments-realtime')
+            .on('postgres_changes',
+                { event: 'INSERT', schema: 'public', table: 'appointments' },
+                (payload) => {
+                    // Add new appointment instantly — avoid duplicates
+                    setAppointments(prev => {
+                        if (prev.some(a => a.id === payload.new.id)) return prev;
+                        return [payload.new, ...prev];
+                    });
+                }
+            )
+            .on('postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'appointments' },
+                (payload) => {
+                    setAppointments(prev =>
+                        prev.map(a => a.id === payload.new.id ? payload.new : a)
+                    );
+                }
+            )
+            .on('postgres_changes',
+                { event: 'DELETE', schema: 'public', table: 'appointments' },
+                (payload) => {
+                    setAppointments(prev => prev.filter(a => a.id !== payload.old.id));
+                }
+            )
+            .subscribe();
+
+        // Subscribe to prescriptions table changes
+        const rxChannel = supabase
+            .channel('prescriptions-realtime')
+            .on('postgres_changes',
+                { event: 'INSERT', schema: 'public', table: 'prescriptions' },
+                (payload) => {
+                    setPrescriptions(prev => {
+                        if (prev.some(r => r.id === payload.new.id)) return prev;
+                        return [payload.new, ...prev];
+                    });
+                }
+            )
+            .on('postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'prescriptions' },
+                (payload) => {
+                    setPrescriptions(prev =>
+                        prev.map(r => r.id === payload.new.id ? payload.new : r)
+                    );
+                }
+            )
+            .subscribe();
+
+        // Subscribe to therapies table changes
+        const thChannel = supabase
+            .channel('therapies-realtime')
+            .on('postgres_changes',
+                { event: 'INSERT', schema: 'public', table: 'therapies' },
+                (payload) => {
+                    setTherapies(prev => {
+                        if (prev.some(t => t.id === payload.new.id)) return prev;
+                        return [payload.new, ...prev];
+                    });
+                }
+            )
+            .on('postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'therapies' },
+                (payload) => {
+                    setTherapies(prev =>
+                        prev.map(t => t.id === payload.new.id ? payload.new : t)
+                    );
+                }
+            )
+            .subscribe();
+
+        // Cleanup subscriptions on unmount
+        return () => {
+            supabase.removeChannel(aptChannel);
+            supabase.removeChannel(rxChannel);
+            supabase.removeChannel(thChannel);
+        };
+    }, []);
+
+    // ── Auto-poll every 30 seconds as fallback (if real-time isn't available) ─
+    useEffect(() => {
+        const interval = setInterval(async () => {
+            try {
+                const [aptsRes, rxsRes, thsRes] = await Promise.all([
+                    appointmentsService.getAll(),
+                    prescriptionsService.getAll(),
+                    therapiesService.getAll(),
+                ]);
+                if (!aptsRes.error && aptsRes.data) setAppointments(aptsRes.data);
+                if (!rxsRes.error && rxsRes.data) setPrescriptions(rxsRes.data);
+                if (!thsRes.error && thsRes.data) setTherapies(thsRes.data);
+            } catch (e) {
+                // Silent — auto-poll failure shouldn't interrupt UX
+            }
+        }, 30000); // every 30 seconds
+
+        return () => clearInterval(interval);
+    }, []);
 
     // ── APPOINTMENTS ──────────────────────────────────────────────────────────
     const addAppointment = async (apt) => {
         const id = genId('apt-');
         const newApt = { id, ...apt, created_at: new Date().toISOString() };
 
-        // Optimistic update
+        // Optimistic update (immediately visible to the booking user)
         setAppointments(prev => [newApt, ...prev]);
 
-        const { data, error } = await appointmentsService.insert(newApt);
+        // 🔄 Try full insert (with email fields)
+        let { data, error } = await appointmentsService.insert(newApt);
+
+        // If column doesn't exist yet → retry with only core fields (schema migration not run)
+        if (error && error.message?.includes('column')) {
+            console.warn('Retrying appointment insert without email fields (run ALTER TABLE migration)');
+            const coreApt = {
+                id: newApt.id,
+                patient_id: newApt.patient_id,
+                patient_name: newApt.patient_name,
+                doctor_id: newApt.doctor_id,
+                doctor_name: newApt.doctor_name,
+                date: newApt.date,
+                time: newApt.time,
+                reason: newApt.reason,
+                status: newApt.status,
+                created_at: newApt.created_at,
+            };
+            ({ data, error } = await appointmentsService.insert(coreApt));
+        }
+
         if (error) {
-            console.error('Supabase insert appointment error:', error.message);
-            // Keep optimistic state anyway
+            console.error('❌ Supabase insert appointment failed:', error.message);
         } else if (data) {
-            // Replace optimistic item with server-confirmed one
-            setAppointments(prev => prev.map(a => a.id === id ? data : a));
+            // Replace optimistic item with server-confirmed record
+            setAppointments(prev => prev.map(a => a.id === id ? { ...data, ...newApt } : a));
         }
         return newApt;
     };
@@ -90,11 +214,16 @@ export function useDataStore() {
 
         setPrescriptions(prev => [newRx, ...prev]);
 
-        const { data, error } = await prescriptionsService.insert(newRx);
+        // 🔄 Try full insert first, fallback without email fields
+        let { data, error } = await prescriptionsService.insert(newRx);
+        if (error && error.message?.includes('column')) {
+            const { patient_email, doctor_email, ...coreRx } = newRx;
+            ({ data, error } = await prescriptionsService.insert(coreRx));
+        }
         if (error) {
-            console.error('Supabase insert prescription error:', error.message);
+            console.error('❌ Supabase insert prescription failed:', error.message);
         } else if (data) {
-            setPrescriptions(prev => prev.map(r => r.id === id ? data : r));
+            setPrescriptions(prev => prev.map(r => r.id === id ? { ...data, ...newRx } : r));
         }
         return newRx;
     };
@@ -106,11 +235,16 @@ export function useDataStore() {
 
         setTherapies(prev => [newTh, ...prev]);
 
-        const { data, error } = await therapiesService.insert(newTh);
+        // 🔄 Try full insert first, fallback without email fields
+        let { data, error } = await therapiesService.insert(newTh);
+        if (error && error.message?.includes('column')) {
+            const { patient_email, ...coreTh } = newTh;
+            ({ data, error } = await therapiesService.insert(coreTh));
+        }
         if (error) {
-            console.error('Supabase insert therapy error:', error.message);
+            console.error('❌ Supabase insert therapy failed:', error.message);
         } else if (data) {
-            setTherapies(prev => prev.map(t => t.id === id ? data : t));
+            setTherapies(prev => prev.map(t => t.id === id ? { ...data, ...newTh } : t));
         }
         return newTh;
     };

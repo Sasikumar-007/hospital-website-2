@@ -4,6 +4,7 @@ import { useDataStore } from '../../hooks/useDataStore.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
+import { jsPDF } from 'jspdf';
 import {
     Calendar, ClipboardList, Brain, Users, Clock, CheckCircle,
     Plus, X, Loader2, ChevronDown, ChevronUp, Pill, Utensils,
@@ -63,8 +64,15 @@ export default function DoctorDashboard() {
     const { user } = useAuth();
     const { appointments, prescriptions, THERAPISTS, addPrescription, addTherapy, updateAppointment, reload } = useDataStore();
 
-    const myAppointments = appointments.filter(a => a.doctor_id === user?.id);
-    const myPrescriptions = prescriptions.filter(p => p.doctor_id === user?.id);
+    // Match by doctor_id OR doctor_name OR doctor_email
+    // (robust fallback for ID mismatches when doctor was added via admin)
+    const matchesMe = (record) =>
+        record.doctor_id === user?.id ||
+        (user?.email && record.doctor_email === user?.email) ||
+        (user?.name && record.doctor_name === user?.name);
+
+    const myAppointments = appointments.filter(matchesMe);
+    const myPrescriptions = prescriptions.filter(matchesMe);
 
     // Consultation state
     const [selectedApt, setSelectedApt] = useState(null);
@@ -110,8 +118,10 @@ export default function DoctorDashboard() {
             const rx = await addPrescription({
                 patient_id: selectedApt.patient_id,
                 patient_name: selectedApt.patient_name,
+                patient_email: selectedApt.patient_email || '',
                 doctor_id: user.id,
                 doctor_name: user.name,
+                doctor_email: user.email || '',
                 appointment_id: selectedApt.id,
                 symptoms: consult.symptoms,
                 diagnosis: consult.diagnosis,
@@ -131,6 +141,7 @@ export default function DoctorDashboard() {
                     prescription_id: rx.id,
                     patient_id: selectedApt.patient_id,
                     patient_name: selectedApt.patient_name,
+                    patient_email: selectedApt.patient_email || '',
                     therapist_id: consult.therapist_id,
                     therapist_name: therapist?.name || '',
                     therapy_type: consult.therapy,
@@ -165,32 +176,154 @@ export default function DoctorDashboard() {
     const removeMedicine = (idx) => setConsult(c => ({ ...c, medicines: c.medicines.filter((_, i) => i !== idx) }));
 
     const downloadPrescription = (rx) => {
-        const content = `
-PANCHAKARMA PATIENT MANAGEMENT SYSTEM
-Digital Prescription
-======================================
-Patient: ${rx.patient_name}
-Doctor: ${rx.doctor_name}
-Date: ${rx.date}
+        const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const W = 210; // A4 width mm
+        const margin = 18;
+        let y = 0;
 
-Symptoms: ${rx.symptoms}
-Diagnosis: ${rx.diagnosis}
-Dosha: ${rx.dosha} (${rx.dosha_confidence}% confidence)
+        // ── Header band ──────────────────────────────────────
+        doc.setFillColor(22, 78, 99);           // dark teal
+        doc.rect(0, 0, W, 38, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(18);
+        doc.setFont('helvetica', 'bold');
+        doc.text('PANCHAKARMA PATIENT MANAGEMENT SYSTEM', W / 2, 14, { align: 'center' });
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Ayurvedic Healthcare  |  Digital Prescription', W / 2, 22, { align: 'center' });
+        doc.setFontSize(9);
+        doc.text(`Generated: ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`, W / 2, 30, { align: 'center' });
 
-MEDICINES:
-${rx.medicines?.map(m => `• ${m.name} — ${m.dose}, ${m.frequency} for ${m.duration}`).join('\n')}
+        y = 46;
+        doc.setTextColor(30, 30, 30);
 
-THERAPY: ${rx.therapy}
-THERAPIST: ${rx.therapist_name || 'TBD'}
-DIET: ${rx.diet}
-======================================
-    `.trim();
-        const blob = new Blob([content], { type: 'text/plain' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-        a.download = `Prescription_${rx.patient_name.replace(' ', '_')}_${rx.date}.txt`;
-        a.click();
-        toast.success('Prescription downloaded!');
+        // ── Patient / Doctor info box ─────────────────────────
+        doc.setFillColor(245, 248, 250);
+        doc.roundedRect(margin, y, W - margin * 2, 34, 3, 3, 'F');
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(80, 80, 80);
+        doc.text('PATIENT', margin + 4, y + 8);
+        doc.text('DOCTOR', W / 2 + 4, y + 8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(20, 20, 20);
+        doc.setFontSize(11);
+        doc.text(rx.patient_name || '—', margin + 4, y + 17);
+        doc.text(rx.doctor_name || '—', W / 2 + 4, y + 17);
+        doc.setFontSize(9);
+        doc.setTextColor(100, 100, 100);
+        doc.text(`Date: ${rx.date || '—'}`, margin + 4, y + 26);
+        doc.text(`Appointment: ${rx.appointment_id || '—'}`, W / 2 + 4, y + 26);
+
+        y += 42;
+
+        // helper: section title bar
+        const sectionTitle = (title, r, g, b) => {
+            doc.setFillColor(r, g, b);
+            doc.rect(margin, y, W - margin * 2, 7, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'bold');
+            doc.text(title, margin + 3, y + 5);
+            doc.setTextColor(30, 30, 30);
+            doc.setFont('helvetica', 'normal');
+            y += 10;
+        };
+
+        // helper: wrapped text block
+        const wrappedText = (text, indent = 0) => {
+            const lines = doc.splitTextToSize(text || '—', W - margin * 2 - indent - 2);
+            doc.setFontSize(10);
+            lines.forEach(line => {
+                doc.text(line, margin + indent, y);
+                y += 5.5;
+            });
+            y += 1;
+        };
+
+        // ── Dosha badge ──────────────────────────────────────
+        const doshaColors = { Vata: [37, 99, 235], Pitta: [234, 88, 12], Kapha: [22, 163, 74] };
+        const dc = doshaColors[rx.dosha] || [80, 80, 80];
+        doc.setFillColor(...dc);
+        doc.roundedRect(margin, y, 60, 12, 3, 3, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`Dosha: ${rx.dosha || '—'}  (${rx.dosha_confidence || 0}%)`, margin + 4, y + 8);
+        doc.setTextColor(30, 30, 30);
+        y += 18;
+
+        // ── Symptoms ─────────────────────────────────────────
+        sectionTitle('SYMPTOMS', 101, 60, 196);   // purple
+        wrappedText(rx.symptoms);
+
+        // ── Diagnosis ────────────────────────────────────────
+        sectionTitle('DIAGNOSIS', 37, 99, 235);   // blue
+        wrappedText(rx.diagnosis);
+
+        // ── Medicines ────────────────────────────────────────
+        sectionTitle('MEDICINES', 16, 78, 99);    // teal
+        const meds = Array.isArray(rx.medicines) ? rx.medicines.filter(m => m.name) : [];
+        if (meds.length === 0) {
+            doc.setFontSize(9);
+            doc.setTextColor(130, 130, 130);
+            doc.text('No medicines prescribed.', margin + 2, y);
+            y += 6;
+        } else {
+            // Table header
+            doc.setFillColor(230, 240, 245);
+            doc.rect(margin, y, W - margin * 2, 7, 'F');
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(60, 60, 60);
+            const cols = [margin + 2, margin + 60, margin + 95, margin + 135];
+            ['Medicine Name', 'Dose', 'Frequency', 'Duration'].forEach((h, i) => doc.text(h, cols[i], y + 5));
+            y += 9;
+            doc.setFont('helvetica', 'normal');
+            meds.forEach((m, idx) => {
+                doc.setFillColor(idx % 2 === 0 ? 255 : 248, idx % 2 === 0 ? 255 : 250, idx % 2 === 0 ? 255 : 252);
+                doc.rect(margin, y - 1, W - margin * 2, 7, 'F');
+                doc.setFontSize(9);
+                doc.setTextColor(20, 20, 20);
+                doc.text(`${idx + 1}. ${m.name}`, cols[0], y + 4);
+                doc.text(m.dose || '', cols[1], y + 4);
+                doc.text(m.frequency || '', cols[2], y + 4);
+                doc.text(m.duration || '', cols[3], y + 4);
+                y += 8;
+                if (y > 260) { doc.addPage(); y = 20; }  // page break
+            });
+        }
+        y += 3;
+
+        // ── Therapy ──────────────────────────────────────────
+        sectionTitle('THERAPY & THERAPIST', 22, 163, 74);  // green
+        doc.setFontSize(10);
+        doc.text(`Therapy: ${rx.therapy || '—'}`, margin + 2, y);
+        y += 6;
+        doc.text(`Therapist: ${rx.therapist_name || 'TBD'}`, margin + 2, y);
+        y += 8;
+
+        // ── Diet ─────────────────────────────────────────────
+        sectionTitle('DIET ADVICE', 180, 83, 9);  // amber
+        wrappedText(rx.diet);
+
+        // ── Footer ───────────────────────────────────────────
+        const footerY = 285;
+        doc.setDrawColor(200, 200, 200);
+        doc.line(margin, footerY - 4, W - margin, footerY - 4);
+        doc.setFontSize(8);
+        doc.setTextColor(130, 130, 130);
+        doc.text('This is a digitally generated prescription from Panchakarma PMS. Valid with doctor signature.', W / 2, footerY, { align: 'center' });
+        doc.text(`Dr. ${rx.doctor_name || ''}`, W - margin, footerY - 8, { align: 'right' });
+        doc.setFont('helvetica', 'italic');
+        doc.text('Authorised Signature', W - margin, footerY - 3, { align: 'right' });
+
+        // ── Save ─────────────────────────────────────────────
+        const filename = `Prescription_${(rx.patient_name || 'Patient').replace(/\s+/g, '_')}_${rx.date || 'NA'}.pdf`;
+        doc.save(filename);
+        toast.success('📄 PDF prescription downloaded!');
     };
+
 
     return (
         <DashboardLayout activeTab={activeTab} onTabChange={setActiveTab} onRefresh={reload}>
@@ -324,14 +457,74 @@ DIET: ${rx.diet}
                                 </div>
                             </div>
 
-                            {/* Symptoms */}
+                            {/* ── Symptoms Checkbox Grid ── */}
                             <div className="card">
-                                <label className="label">Symptoms</label>
-                                <textarea className="input-field min-h-[80px] resize-none" value={consult.symptoms}
+                                <div className="flex items-center justify-between mb-4">
+                                    <label className="font-bold text-gray-900 text-base">🩺 Symptoms</label>
+                                    {consult.symptoms && (
+                                        <span className="text-xs bg-purple-100 text-purple-700 font-semibold px-2 py-1 rounded-full">
+                                            {consult.symptoms.split(',').filter(s => s.trim()).length} selected
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-1.5 max-h-64 overflow-y-auto border border-gray-100 rounded-xl p-3 bg-gray-50 mb-3">
+                                    {[
+                                        'Dry skin', 'Joint pain', 'Anxiety', 'Insomnia', 'Constipation',
+                                        'Bloating', 'Irregular digestion', 'Cold hands and feet', 'Restlessness',
+                                        'Muscle stiffness', 'Weight loss', 'Fatigue', 'Cracking joints',
+                                        'Acid reflux', 'Heartburn', 'Skin rashes', 'Excessive sweating',
+                                        'Irritability', 'Anger', 'Burning sensation in stomach', 'Inflammation',
+                                        'Loose stools', 'Red eyes', 'Excess thirst', 'Headache',
+                                        'Weight gain', 'Slow digestion', 'Excess mucus', 'Cold and cough',
+                                        'Water retention', 'Sleepiness', 'Sluggish metabolism', 'Nasal congestion',
+                                        'Depression', 'Heavy body feeling', 'Low appetite', 'Stomach pain',
+                                        'Vomiting', 'Diarrhea', 'Fever', 'Weakness', 'Body pain',
+                                        'Loss of appetite', 'Nausea', 'Dizziness',
+                                    ].map((symptom) => {
+                                        const currentList = consult.symptoms.split(',').map(s => s.trim()).filter(Boolean);
+                                        const isChecked = currentList.includes(symptom);
+                                        return (
+                                            <label key={symptom}
+                                                className={`flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1.5 transition-all select-none
+                                                    ${isChecked ? 'bg-purple-50 text-purple-800' : 'hover:bg-white text-gray-700'}`}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isChecked}
+                                                    onChange={() => {
+                                                        const updated = isChecked
+                                                            ? currentList.filter(s => s !== symptom)
+                                                            : [...currentList, symptom];
+                                                        setConsult(c => ({ ...c, symptoms: updated.join(', ') }));
+                                                    }}
+                                                    className="accent-purple-600 w-4 h-4 flex-shrink-0"
+                                                />
+                                                <span className="text-xs font-medium leading-tight">{symptom}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+
+                                {consult.symptoms.trim() && (
+                                    <div className="flex items-start gap-2 mb-3 p-2.5 bg-purple-50 border border-purple-100 rounded-xl">
+                                        <p className="text-xs text-purple-700 flex-1 leading-relaxed">
+                                            <span className="font-semibold">Selected: </span>{consult.symptoms}
+                                        </p>
+                                        <button onClick={() => setConsult(c => ({ ...c, symptoms: '' }))}
+                                            className="text-xs text-red-400 hover:text-red-600 font-semibold flex-shrink-0 mt-0.5">
+                                            Clear all
+                                        </button>
+                                    </div>
+                                )}
+
+                                <textarea className="input-field text-sm resize-none" rows={2}
+                                    value={consult.symptoms}
                                     onChange={e => setConsult(c => ({ ...c, symptoms: e.target.value }))}
-                                    placeholder="Enter patient symptoms (e.g. dry skin, anxiety, joint pain, insomnia...)" />
+                                    placeholder="Or type additional symptoms manually..." />
+
                                 <button onClick={() => { setDoshaInput(consult.symptoms); setActiveTab('dosha'); }}
-                                    className="mt-2 text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1 font-medium">
+                                    disabled={!consult.symptoms.trim()}
+                                    className="mt-3 btn-primary text-sm flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
                                     <Sparkles className="w-4 h-4" /> Run AI Dosha Analysis
                                 </button>
                             </div>
@@ -346,12 +539,147 @@ DIET: ${rx.diet}
 
                             {/* Medicines */}
                             <div className="card">
-                                <div className="flex items-center justify-between mb-3">
-                                    <label className="label mb-0 flex items-center gap-2"><Pill className="w-4 h-4" /> Medicines</label>
-                                    <button onClick={addMedicine} className="text-xs text-blue-600 flex items-center gap-1 font-semibold hover:text-blue-800">
-                                        <Plus className="w-3 h-3" /> Add
-                                    </button>
+                                <div className="flex items-center justify-between mb-4">
+                                    <label className="label mb-0 flex items-center gap-2">
+                                        <Pill className="w-4 h-4" /> Medicines
+                                    </label>
+                                    <div className="flex items-center gap-2">
+                                        {consult.medicines.filter(m => m.name).length > 0 && (
+                                            <span className="text-xs bg-blue-100 text-blue-700 font-semibold px-2 py-1 rounded-full">
+                                                {consult.medicines.filter(m => m.name).length} added
+                                            </span>
+                                        )}
+                                        <button onClick={addMedicine} className="text-xs text-blue-600 flex items-center gap-1 font-semibold hover:text-blue-800">
+                                            <Plus className="w-3 h-3" /> Add custom
+                                        </button>
+                                    </div>
                                 </div>
+
+                                {/* ── Quick-select grouped by Dosha ── */}
+                                <div className="mb-4 space-y-3">
+                                    {[
+                                        {
+                                            label: 'Vata Treatment', color: 'blue',
+                                            medicines: [
+                                                { name: 'Ashwagandha', dose: '5g', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Dashmoola', dose: '3g', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Bala', dose: '5g', frequency: 'Once daily', duration: '30 days' },
+                                                { name: 'Shatavari', dose: '5g', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Hingvastak Churna', dose: '3g', frequency: 'Before meals', duration: '21 days' },
+                                                { name: 'Mahanarayan Oil', dose: 'External', frequency: 'Daily massage', duration: '21 days' },
+                                                { name: 'Saraswatarishta', dose: '15ml', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Brahmi Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Yogaraj Guggulu', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Vata Chintamani Ras', dose: '125mg', frequency: 'Once daily', duration: '15 days' },
+                                            ],
+                                        },
+                                        {
+                                            label: 'Pitta Treatment', color: 'orange',
+                                            medicines: [
+                                                { name: 'Amla Capsules', dose: '500mg', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Avipattikar Churna', dose: '3g', frequency: 'Before meals', duration: '21 days' },
+                                                { name: 'Guduchi', dose: '3g', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Neem Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Praval Pishti', dose: '250mg', frequency: 'Twice daily', duration: '15 days' },
+                                                { name: 'Kamdudha Ras', dose: '125mg', frequency: 'Twice daily', duration: '15 days' },
+                                                { name: 'Shatavari Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Chandanasava', dose: '15ml', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Usheerasava', dose: '15ml', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Mahatiktaka Ghrita', dose: '10ml', frequency: 'Once daily', duration: '21 days' },
+                                            ],
+                                        },
+                                        {
+                                            label: 'Kapha Treatment', color: 'green',
+                                            medicines: [
+                                                { name: 'Trikatu Churna', dose: '3g', frequency: 'Before meals', duration: '21 days' },
+                                                { name: 'Sitopaladi Churna', dose: '3g', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Talisadi Churna', dose: '3g', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Pushkarmool', dose: '3g', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Vyoshadi Vati', dose: '2 tabs', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Guggulu Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Punarnava Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Kanakasava', dose: '15ml', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Pippali Tablets', dose: '2 tabs', frequency: 'Once daily', duration: '21 days' },
+                                                { name: 'Talisa Patra', dose: '3g', frequency: 'Twice daily', duration: '21 days' },
+                                            ],
+                                        },
+                                        {
+                                            label: 'General Ayurvedic', color: 'purple',
+                                            medicines: [
+                                                { name: 'Triphala Churna', dose: '3g', frequency: 'At bedtime', duration: '30 days' },
+                                                { name: 'Chyawanprash', dose: '10g', frequency: 'Once daily', duration: '30 days' },
+                                                { name: 'Liv-52', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Brahmi Syrup', dose: '10ml', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Ashwagandha Capsules', dose: '1 cap', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Tulsi Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '21 days' },
+                                                { name: 'Giloy Juice', dose: '30ml', frequency: 'Once daily', duration: '30 days' },
+                                                { name: 'Amalaki Rasayana', dose: '5g', frequency: 'Once daily', duration: '30 days' },
+                                                { name: 'Arjuna Tablets', dose: '2 tabs', frequency: 'Twice daily', duration: '30 days' },
+                                                { name: 'Haritaki Powder', dose: '3g', frequency: 'At bedtime', duration: '21 days' },
+                                            ],
+                                        },
+                                    ].map(({ label, color, medicines: mList }) => {
+                                        const colorMap = {
+                                            blue: 'bg-blue-50 text-blue-800 border-blue-200',
+                                            orange: 'bg-orange-50 text-orange-800 border-orange-200',
+                                            green: 'bg-green-50 text-green-800 border-green-200',
+                                            purple: 'bg-purple-50 text-purple-800 border-purple-200',
+                                        };
+                                        const accentMap = {
+                                            blue: 'accent-blue-600', orange: 'accent-orange-500',
+                                            green: 'accent-green-600', purple: 'accent-purple-600',
+                                        };
+                                        const selectedNames = consult.medicines.map(m => m.name);
+                                        return (
+                                            <div key={label} className={`rounded-xl border p-3 ${colorMap[color]}`}>
+                                                <p className="text-xs font-bold mb-2 uppercase tracking-wide opacity-70">{label}</p>
+                                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-3 gap-y-1.5">
+                                                    {mList.map((med) => {
+                                                        const isChecked = selectedNames.includes(med.name);
+                                                        return (
+                                                            <label key={med.name}
+                                                                className="flex items-center gap-1.5 cursor-pointer select-none group">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={isChecked}
+                                                                    className={`${accentMap[color]} w-3.5 h-3.5 flex-shrink-0`}
+                                                                    onChange={() => {
+                                                                        if (isChecked) {
+                                                                            // Remove this medicine from the list
+                                                                            setConsult(c => ({
+                                                                                ...c,
+                                                                                medicines: c.medicines.filter(m => m.name !== med.name),
+                                                                            }));
+                                                                        } else {
+                                                                            // Add with defaults; remove any blank placeholder rows first
+                                                                            setConsult(c => {
+                                                                                const withoutBlanks = c.medicines.filter(m => m.name.trim());
+                                                                                return {
+                                                                                    ...c,
+                                                                                    medicines: [...withoutBlanks, { ...med }],
+                                                                                };
+                                                                            });
+                                                                        }
+                                                                    }}
+                                                                />
+                                                                <span className="text-xs font-medium leading-tight group-hover:opacity-80">
+                                                                    {med.name}
+                                                                </span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* ── Manual Entry Rows (editable after checkbox selection) ── */}
+                                {consult.medicines.length === 0 && (
+                                    <p className="text-xs text-gray-400 text-center py-2 italic">
+                                        Select medicines above or click "Add custom" to enter manually
+                                    </p>
+                                )}
                                 {consult.medicines.map((m, idx) => (
                                     <div key={idx} className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 items-end">
                                         <input className="input-field text-sm py-2" placeholder="Medicine name" value={m.name} onChange={e => updateMedicine(idx, 'name', e.target.value)} />
@@ -359,11 +687,12 @@ DIET: ${rx.diet}
                                         <input className="input-field text-sm py-2" placeholder="Frequency" value={m.frequency} onChange={e => updateMedicine(idx, 'frequency', e.target.value)} />
                                         <div className="flex gap-2">
                                             <input className="input-field text-sm py-2 flex-1" placeholder="Duration" value={m.duration} onChange={e => updateMedicine(idx, 'duration', e.target.value)} />
-                                            {idx > 0 && <button onClick={() => removeMedicine(idx)} className="text-red-400 hover:text-red-600 p-2"><X className="w-4 h-4" /></button>}
+                                            <button onClick={() => removeMedicine(idx)} className="text-red-400 hover:text-red-600 p-2"><X className="w-4 h-4" /></button>
                                         </div>
                                     </div>
                                 ))}
                             </div>
+
 
                             {/* Therapy & Diet */}
                             <div className="card">
@@ -397,6 +726,7 @@ DIET: ${rx.diet}
                     )}
                 </div>
             )}
+
 
             {/* ── AI DOSHA ANALYSIS ── */}
             {activeTab === 'dosha' && (

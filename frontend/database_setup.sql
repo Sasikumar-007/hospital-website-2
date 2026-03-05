@@ -26,16 +26,18 @@ CREATE TABLE public.profiles (
 
 -- ── APPOINTMENTS ────────────────────────────────────────────
 CREATE TABLE public.appointments (
-  id           TEXT PRIMARY KEY,
-  patient_id   TEXT NOT NULL,
-  patient_name TEXT NOT NULL,
-  doctor_id    TEXT NOT NULL,
-  doctor_name  TEXT NOT NULL,
-  date         TEXT NOT NULL,
-  time         TEXT NOT NULL,
-  reason       TEXT,
-  status       TEXT DEFAULT 'scheduled',
-  created_at   TIMESTAMPTZ DEFAULT NOW()
+  id             TEXT PRIMARY KEY,
+  patient_id     TEXT NOT NULL,
+  patient_name   TEXT NOT NULL,
+  patient_email  TEXT,
+  doctor_id      TEXT NOT NULL,
+  doctor_name    TEXT NOT NULL,
+  doctor_email   TEXT,
+  date           TEXT NOT NULL,
+  time           TEXT NOT NULL,
+  reason         TEXT,
+  status         TEXT DEFAULT 'scheduled',
+  created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ── PRESCRIPTIONS ───────────────────────────────────────────
@@ -43,8 +45,10 @@ CREATE TABLE public.prescriptions (
   id                TEXT PRIMARY KEY,
   patient_id        TEXT NOT NULL,
   patient_name      TEXT NOT NULL,
+  patient_email     TEXT,
   doctor_id         TEXT NOT NULL,
   doctor_name       TEXT NOT NULL,
+  doctor_email      TEXT,
   appointment_id    TEXT,
   symptoms          TEXT,
   diagnosis         TEXT,
@@ -66,6 +70,7 @@ CREATE TABLE public.therapies (
   prescription_id    TEXT,
   patient_id         TEXT NOT NULL,
   patient_name       TEXT NOT NULL,
+  patient_email      TEXT,
   therapist_id       TEXT,
   therapist_name     TEXT,
   therapy_type       TEXT NOT NULL,
@@ -161,3 +166,13 @@ SELECT 'profiles'      AS tbl, COUNT(*) AS rows FROM public.profiles      UNION 
 SELECT 'appointments'  AS tbl, COUNT(*) AS rows FROM public.appointments  UNION ALL
 SELECT 'prescriptions' AS tbl, COUNT(*) AS rows FROM public.prescriptions UNION ALL
 SELECT 'therapies'     AS tbl, COUNT(*) AS rows FROM public.therapies;
+
+-- ============================================================
+-- ⚡ MIGRATION — run this if you already have the tables
+--    (adds missing email columns WITHOUT dropping existing data)
+-- ============================================================
+-- ALTER TABLE public.appointments  ADD COLUMN IF NOT EXISTS patient_email TEXT;
+-- ALTER TABLE public.appointments  ADD COLUMN IF NOT EXISTS doctor_email  TEXT;
+-- ALTER TABLE public.prescriptions ADD COLUMN IF NOT EXISTS patient_email TEXT;
+-- ALTER TABLE public.prescriptions ADD COLUMN IF NOT EXISTS doctor_email  TEXT;
+-- ALTER TABLE public.therapies     ADD COLUMN IF NOT EXISTS patient_email TEXT;

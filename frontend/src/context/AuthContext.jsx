@@ -17,7 +17,23 @@ export function AuthProvider({ children }) {
 
     useEffect(() => {
         const stored = localStorage.getItem('panchakarma_user');
-        if (stored) { try { setUser(JSON.parse(stored)); } catch { } }
+        if (stored) {
+            try {
+                const parsed = JSON.parse(stored);
+                // Migrate old timestamp-based IDs to stable email-based IDs
+                // (old IDs were like 'u-1709551234567', new stable ones are 'u-<base36hash>')
+                if (parsed && parsed.email && parsed.role === 'patient' &&
+                    /^u-\d{10,}/.test(parsed.id)) {
+                    const emailLower = parsed.email.toLowerCase();
+                    const stableId = 'u-' + emailLower.split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) & 0xffffffff, 0).toString(36);
+                    const migrated = { ...parsed, id: stableId };
+                    localStorage.setItem('panchakarma_user', JSON.stringify(migrated));
+                    setUser(migrated);
+                } else {
+                    setUser(parsed);
+                }
+            } catch { }
+        }
         setLoading(false);
     }, []);
 
@@ -52,7 +68,12 @@ export function AuthProvider({ children }) {
         try {
             const { data, error } = await profilesService.getByEmail(emailLower);
             if (!error && data) {
-                const user = { ...data, avatar: data.avatar || emailLower.slice(0, 2).toUpperCase() };
+                // Always ensure email is on the user object for matching to work
+                const user = {
+                    ...data,
+                    email: emailLower,  // guarantee email is set
+                    avatar: data.avatar || emailLower.slice(0, 2).toUpperCase(),
+                };
                 setUser(user);
                 localStorage.setItem('panchakarma_user', JSON.stringify(user));
                 return { success: true, user };
@@ -61,9 +82,11 @@ export function AuthProvider({ children }) {
             console.warn('Supabase profile lookup failed:', e.message);
         }
 
-        // 4. Fallback: auto-create patient
+        // 4. Fallback: auto-create patient with a STABLE ID derived from email
+        // Using a simple deterministic hash so the same email always gets the same ID
+        const stableId = 'u-' + emailLower.split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) & 0xffffffff, 0).toString(36);
         const fallback = {
-            id: 'u-' + Date.now(),
+            id: stableId,
             name: emailLower.split('@')[0],
             role: 'patient',
             email: emailLower,
@@ -79,7 +102,8 @@ export function AuthProvider({ children }) {
      */
     const register = async ({ name, email, password, role }) => {
         const emailLower = email.trim().toLowerCase();
-        const id = 'u-' + Date.now();
+        // Use same stable ID formula so login & register produce the same ID
+        const id = 'u-' + emailLower.split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) & 0xffffffff, 0).toString(36);
         const avatar = name.trim().split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 
         const newProfile = { id, name: name.trim(), email: emailLower, role, avatar, status: 'active' };
