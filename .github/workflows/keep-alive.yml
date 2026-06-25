@@ -1,0 +1,18 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    - cron: '0 9 * * 1,4'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        run: |
+          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" \
+            "https://hbiwdyktdcgowwisjlst.supabase.co/rest/v1/visitors?select=count&limit=1" \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhiaXdkeWt0ZGNnb3d3aXNqbHN0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxOTU2MjIsImV4cCI6MjA5Nzc3MTYyMn0.jKI5lSwXyB_Nzv_4zictWHk5NYUr3tQA3xaRpBhzda8" \
+            -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhiaXdkeWt0ZGNnb3d3aXNqbHN0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxOTU2MjIsImV4cCI6MjA5Nzc3MTYyMn0.jKI5lSwXyB_Nzv_4zictWHk5NYUr3tQA3xaRpBhzda8"
+          echo "Supabase is alive! Timer reset successfully."
